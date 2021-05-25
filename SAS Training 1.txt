@@ -1,0 +1,679 @@
+Example Code From Today:
+
+ 
+
+ 
+
+GLOBAL MACRO DEFINITIONS
+
+ 
+
+ 
+
+ 
+
+%let proddt='01APR2019'd;
+
+ 
+
+DATA _NULL_;
+
+ 
+
+CALL SYMPUT('lastmn', PUT(INTNX('month',&proddt.,-1,'E'),yymmddd10.));
+
+CALL SYMPUT('lastmn2',"'"||PUT(INTNX('month',&proddt.,-1,'E'),date9.)||"'d");
+
+CALL SYMPUT('lastmn3',PUT(INTNX('month',&proddt.,-1,'E'),yymmn6.));
+
+ 
+
+CALL SYMPUT('prod', PUT(&proddt.,yymmddn.));
+
+ 
+
+ 
+
+run;
+
+ 
+
+%put Ending month is &lastmn.;
+
+%put Ending month as sas date literal &lastmn2.;
+
+%put Ending incurred month is &lastmn3.;
+
+%put Production date is &prod.;
+
+ 
+
+ 
+
+ 
+
+DEFINING CUSTOM FUNCTIONS WITH LOCAL PARAMETERS
+
+ 
+
+ 
+
+ 
+
+/* Compare HealthPlan MM Sources */
+
+ 
+
+options nomprint nosymbolgen;
+
+ 
+
+%macro comparemm(hp=, start_yr=, compare_mn=);
+
+ 
+
+ 
+
+proc sql;
+
+
+connect to odbc as edw (datasrc="LMEDW");
+
+ 
+
+     create table billing_table as select * from connection to edw
+
+ 
+
+(
+
+ 
+
+     select A.*, LEFT(m.healthplan_memberid,12) as healthplan_memberid
+
+ 
+
+         FROM
+
+ 
+
+              (select healthplan_id_ref, patientid_ref,
+
+                     EOMONTH(CAST(CONCAT(SUBSTRING(month_of_service,3,4),'-',SUBSTRING(month_of_service,1,2),'-01') as date)) as incurred_month,
+
+                        sum(CASE WHEN (RemoveFlag=0 and Engagement_Status='Cohort') then 1
+
+                         WHEN (RemoveFlag=1 and Engagement_Status='Cohort') then -1 ELSE 0 END) as risk_member_months,
+
+                           sum(CASE WHEN (RemoveFlag=0 and Engagement_Status='Engaged' and casetype<>'Non Risk') then 1
+
+                         WHEN (RemoveFlag=1 and Engagement_Status='Engaged' and casetype<>'Non Risk') then -1 ELSE 0 END) as risk_engaged_months,
+
+                           sum(CASE WHEN (RemoveFlag=0 and Engagement_Status='Engaged' and casetype='Non Risk') then 1
+
+                         WHEN (RemoveFlag=1 and Engagement_Status='Engaged' and casetype='Non Risk') then -1 ELSE 0 END) as nonrisk_engaged_months
+
+             from landmarkedw.dbo.member_billing
+
+                where
+
+                SUBSTRING(month_of_service,3,4)>=%BQUOTE('&start_yr.') and healthplan_id_ref=%BQUOTE('&hp.')
+
+                group by healthplan_id_ref, patientid_ref, EOMONTH(CAST(CONCAT(SUBSTRING(month_of_service,3,4),'-',SUBSTRING(month_of_service,1,2),'-01') as date))
+
+                     ) A
+
+           LEFT JOIN landmarkedw.dbo.member_master M
+
+           on a.patientid_ref=m.patientid
+
+);
+
+ 
+
+quit;
+
+ 
+
+ 
+
+proc sql;
+
+ 
+
+connect to odbc as edw (datasrc="LMEDW");
+
+ 
+
+create table hcta_member_months as select * from connection to edw
+
+ 
+
+ 
+
+(select healthplan_id_ref, patientid, 
+
+   EOMONTH(convert(date, Incurred_Month + '01')) as incurred_month,
+
+  lob, medical_member_months, Risk_adj_PartA_MM, engaged_status,
+
+  CASE WHEN engaged_status='Y' then medical_member_months else 0 end as engaged_member_months
+
+ 
+
+  from HCEReporting.dbo.hcta_member_months
+
+  where healthplan_id_ref=%BQUOTE('&hp.') and default_view='Y' and
+
+                          YEAR(convert(date, Incurred_Month + '01'))>=%EVAL(&start_yr.));
+
+ 
+
+ 
+
+ 
+
+create table it_member_months as select * from connection to edw
+
+ 
+
+ 
+
+(select mm.patientid as patientid_ref, mm.casetype, mm.engagementstatus as engagement_status, mm.casesubtype,
+
+       CAST(EOMONTH(mm.monthdate,0) as date) as month_date,
+
+       CASE WHEN mm.casetype in ('Risk', 'Risk Available') then 1 else 0 end as risk_member_months,
+
+       CASE WHEN mm.casetype in ('Risk', 'Risk Available') and mm.engagementstatus='Engaged' then 1 else 0 end as risk_engaged_months,
+
+        CASE WHEN mm.casetype in ('Non Risk') and mm.engagementstatus='Engaged' then 1 else 0 end as nonrisk_engaged_mm,
+
+        m.healthplan_id_ref
+
+ 
+
+        from landmarkedw.dbo.member_month_billing MM
+
+        INNER JOIN landmarkedw.dbo.member_master M
+
+        on mm.patientid=m.patientid
+
+        where m.healthplan_id_ref=%BQUOTE('&hp.') and year(monthdate)>=%EVAL(&start_yr.));
+
+ 
+
+disconnect from edw;
+
+ 
+
+ 
+
+quit;
+
+ 
+
+proc sort data=hcta_member_months nodupkey;
+
+by healthplan_id_ref patientid incurred_month;
+
+run;
+
+ 
+
+ 
+
+proc sort data=it_member_months nodupkey;
+
+by healthplan_id_ref patientid_ref month_date;
+
+run;
+
+ 
+
+ 
+
+proc sort data=billing_table nodupkey;
+
+by healthplan_id_ref patientid_ref incurred_month;
+
+run;
+
+ 
+
+    
+
+ 
+
+proc sql;
+
+ 
+
+ 
+
+    create table all_mm_&hp. as select
+
+        COALESCE(a.healthplan_id_ref, b.healthplan_id_ref, c.healthplan_id_ref) as healthplan_id_ref,
+
+       COALESCE(a.patientid_ref, b.patientid, c.patientid_ref) as patientid,
+
+       COALESCE(a.incurred_month, b.incurred_month, c.month_date) as incurred_month,
+
+        a.risk_member_months as billing_risk_mm,
+
+        a.risk_engaged_months as billing_risk_engaged,
+
+        a.nonrisk_engaged_months as billing_non_risk_engaged,
+
+        b.medical_member_months as hcta_risk_mm,
+
+        b.engaged_member_months as hcta_risk_engaged,
+
+        c.risk_member_months as it_risk_mm,
+
+        c.risk_engaged_months as it_risk_engaged,
+
+        c.nonrisk_engaged_mm as it_nonrisk_engaged,
+
+        c.casesubtype
+
+ 
+
+ 
+
+ 
+
+ 
+
+    FROM  billing_table as A
+
+     FULL JOIN hcta_member_months as B
+
+     on a.healthplan_id_ref=b.healthplan_id_ref and a.patientid_ref=b.patientid and substr(a.incurred_month,1,7)=substr(b.incurred_month,1,7)
+
+     FULL JOIN it_member_months as C
+
+     on a.healthplan_id_ref=c.healthplan_id_ref and a.patientid_ref=c.patientid_ref and substr(a.incurred_month,1,7)=substr(c.month_date,1,7);
+
+ 
+
+     quit;
+
+ 
+
+ 
+
+title "Risk cohort Comparison";
+
+title2 "For Healthplan ID = &hp. for Incurred Month = &compare_mn.";
+
+ 
+
+proc freq data=all_mm_&hp.;
+
+    where incurred_month="&compare_mn." and sum(billing_risk_mm,hcta_risk_mm,it_risk_mm)>=1;
+
+     tables billing_risk_mm*hcta_risk_mm*it_risk_mm / missing list;
+
+run;
+
+ 
+
+ 
+
+ 
+
+title "Engaged Risk cohort Comparison";
+
+ 
+
+proc freq data=all_mm_&hp.;
+
+    where incurred_month="&compare_mn." and sum(billing_risk_engaged,hcta_risk_engaged,it_risk_engaged)>=1;
+
+     tables billing_risk_engaged*hcta_risk_engaged*it_risk_engaged/ missing list;
+
+run;
+
+ 
+
+ 
+
+ 
+
+%mend;
+
+ 
+
+ 
+
+%comparemm(hp=1, start_yr=2018, compare_mn=2019-04-30);
+
+%comparemm(hp=2, start_yr=2018, compare_mn=2019-04-30);
+
+ 
+
+ 
+
+ 
+
+FANCY STUFF:   %IF %THEN and %DO loops to loop across sections of code or change what runs.
+
+Also using proc sql to define macro variables.
+
+ 
+
+ 
+
+%macro matches;
+
+ 
+
+ 
+
+%let n=1;
+
+%let i=1;
+
+ 
+
+%DO %WHILE (%eval(&n.)~=%eval(&nmax.+1) AND %eval(&i.)<=%eval(&maxiter.));
+
+ 
+
+ 
+
+ 
+
+proc sql noprint;
+
+    select sum(sample_available) into: totavail from pilot.initial_members ;
+
+     quit;
+
+ 
+
+ 
+
+DATA _NULL_;
+
+ 
+
+   x=int(mod(datetime(),1000000)+%EVAL(&n.));
+
+   call symput('pick', INT(uniform(x)*%SYSEVALF(&totavail.)));
+
+ 
+
+run;
+
+ 
+
+ 
+
+data case_member;
+
+    set pilot.initial_members;
+
+     where sample_available=1;
+
+ 
+
+     IF _N_=%eval(&pick);
+
+ 
+
+run;
+
+ 
+
+  DATA _NULL_;
+
+       CALL SLEEP(2,.1);
+
+  RUN;
+
+ 
+
+ 
+
+proc sql;
+
+    create table controls as select A.*
+
+ 
+
+          from pilot.initial_members as A
+
+           inner join case_member as B
+
+           on a.mbr_group_num=b.mbr_group_num
+
+           where b.sample_available=1 and a.patientid~=b.patientid
+
+         order by random;
+
+quit;
+
+ 
+
+ 
+
+data control_member;
+
+   set controls;
+
+   if _N_=1;
+
+   run;
+
+ 
+
+ 
+
+proc sql noprint;
+
+  select count(*) into :control separated by ' ' from
+
+   control_member;
+
+select patientid into :control_id separated by ' ' from
+
+   control_member;
+
+ 
+
+select count(*) into :case_mem separated by ' ' from
+
+   case_member;
+
+select patientid into :case_mem_id separated by ' ' from
+
+   case_member;
+
+ 
+
+quit;
+
+ 
+
+ 
+
+   %IF "&control."="1" AND "&case_mem"="1" %THEN %DO;
+
+ 
+
+
+    proc sql;
+
+         create table current_match as select
+
+              %EVAL(&N.) as match_number,
+
+ 
+
+              t.patientid as treatment_patientid,
+
+              t.healthplan_memberid as treatment_hp_memberid,
+
+              t.market as treatment_market,
+
+              t.healthplan_id_ref as treatment_hp_id,
+
+              t.healthplanprovider as treatment_healthplan,
+
+              t.age_cat as treatment_agecat,
+
+              t.gender as treatment_gender,
+
+              t.risk_dec_2018 as treatment_riska_201812,
+
+              t.chf as treatment_chf,
+
+              t.pd as treatmeent_pd,
+
+              t.diabetes as treatment_diabetes,
+
+              t.cancer as treatement_cancer,
+
+              t.cld as treatment_cld,
+
+              t.intensity as treatment_intensity,
+
+              t.data_driven_acuity as treatment_dda,
+
+ 
+
+              c.patientid as control_patientid,
+
+              c.healthplan_memberid as control_hp_memberid,
+
+              c.market as control_market,
+
+              c.healthplan_id_ref as control_hp_id,
+
+              c.healthplanprovider as control_healthplan,
+
+              c.age_cat as control_agecat,
+
+              c.gender as control_gender,
+
+              c.risk_dec_2018 as control_riska_201812,
+
+              c.chf as control_chf,
+
+              c.pd as control_pd,
+
+              c.diabetes as control_diabetes,
+
+              c.cancer as control_cancer,
+
+              c.cld as control_cld,
+
+              c.intensity as control_intensity,
+
+              c.data_driven_acuity as control_dda
+
+ 
+
+ 
+
+           from case_member as T
+
+              inner join control_member as C
+
+              on t.mbr_group_num=c.mbr_group_num;
+
+              quit;
+
+ 
+
+ 
+
+ 
+
+          %IF "&n."="1" %THEN %DO;
+
+ 
+
+                data pilot.matched_cases_controls;
+
+                   set current_match;
+
+                  run;
+
+ 
+
+          %END;
+
+ 
+
+ 
+
+          %IF "&n."~="1" %THEN %DO;
+
+ 
+
+                proc append base=pilot.matched_cases_controls data=current_match;
+
+                run;
+
+ 
+
+           %END;
+
+ 
+
+ 
+
+     data pilot.initial_members;
+
+          set pilot.initial_members;
+
+ 
+
+           if patientid in(%eval(&control_id.),%eval(&case_mem_id.)) then sample_available=0;
+
+ 
+
+     run;
+
+ 
+
+  DATA _NULL_;
+
+       CALL SLEEP(2,.1);
+
+  RUN;
+
+ 
+
+ 
+
+    %let n=%eval(&n.+1);
+
+ 
+
+   %end; /*IF*/
+
+ 
+
+ 
+
+%let i=%eval(&i.+1);
+
+ 
+
+%end; /*DO*/
+
+ 
+
+ 
+
+%mend;
+
+ 
+
+/* Execute Macro*/
+
+%matches;

@@ -1,0 +1,965 @@
+
+ 
+
+/*
+
+proc freq data=out.death_km_9mm_frality;
+
+tables index_date*healthplan_id_ref;
+
+format index_date yymmn6.;
+
+run;
+
+ 
+
+proc freq data=out.death_km_9mm_frality;
+
+tables ever_engaged_flag*healthplan_id_ref;
+
+run;
+
+ 
+
+ 
+
+proc univariate data=out.death_km_9mm_frality;
+
+var index_date;
+
+format index_date yymmn6.;
+
+histogram;
+
+run;
+
+*/
+
+ 
+
+ 
+
+data analysis;
+
+    set out.death_km_9mm_frality;
+
+ 
+
+     if index_date<'30JUN2016'd then attrib_q2_16='Y';
+
+                ELSE attrib_q2_16='N';
+
+ 
+
+    months=intck('month', index_date, max_date)+1;
+
+    age=int((index_date-mdy(scan(member_dob,2,"-"),scan(member_dob,3,"-"),scan(member_dob,1,"-")))/365.25);
+
+ 
+
+           if death=1 then d_event='Y'; else d_event='N';
+
+           if hospice=1 then h_event='Y'; else h_event='N';
+
+           if gender='F' then sex=1; else sex=0;
+
+           if cms_esrd='Y' then esrd=1; else esrd=0;
+
+           if ltc_flag='Y' then ltc=1; else ltc=0;
+
+ 
+
+           label ever_engaged_flag="Ever Landmark Engaged";
+
+ 
+
+           IF AGE>=90 THEN AGE_90=1;  ELSE AGE_90=0;
+
+           IF AGE>=85 AND AGE<90 THEN AGE_85_89=1;  ELSE AGE_85_89=0;
+
+           IF AGE>=75 AND AGE<80 THEN AGE_75_79=1;  ELSE AGE_75_79=0;
+
+           IF AGE<75 THEN AGE_LT75=1; ELSE AGE_LT75=0;
+
+ 
+
+run;
+
+ 
+
+ 
+
+title "Summary of Survival Months";
+
+ 
+
+proc means data=analysis n min max mean median std;
+
+class ever_engaged_flag death;
+
+var months;
+
+run;
+
+ 
+
+ 
+
+ 
+
+title "Summary of Survival Months where months>=9";
+
+ 
+
+proc means data=analysis n min max mean median std;
+
+where months>=9;
+
+class ever_engaged_flag death;
+
+var months;
+
+run;
+
+ 
+
+ 
+
+ 
+
+ 
+
+proc sort data=analysis;
+
+by healthplan_id_ref patientid;
+
+run;
+
+ 
+
+proc sort data=out.lstsvc_prior_death nodupkey;
+
+by healthplan_id_ref patientid;
+
+run;
+
+ 
+
+data analysis;
+
+    merge analysis (in=a) out.lstsvc_prior_death (keep=healthplan_id_ref patientid
+
+         ip_svc_date er_svc_date ip_7_days ip_14_days ip_30_days ip_to_death er_to_death);
+
+    by healthplan_id_ref patientid;
+
+    if a=1;
+
+run;
+
+ 
+
+title "Age Groups and IP in last 30 days of life";
+
+ 
+
+PROC FREQ DATA=ANALYSIS;
+
+TABLES AGE*AGE_LT75*AGE_75_79*AGE_85_89*AGE_90  ever_engaged_flag*death*ip_30_days / MISSING LIST;
+
+RUN;
+
+ 
+
+ 
+
+/* This doesn't work because the table name is too long
+
+ 
+
+proc sql;
+
+     create table advanced_care_planning
+
+          as select A.*
+
+                from edw.member_advanced_care_plan_information AS A
+
+                INNER JOIN analysis as B
+
+                on a.patientid_ref=b.patientid;
+
+                quit;
+
+*/
+
+ 
+
+ 
+
+proc sql;
+
+ 
+
+connect to odbc as edw (datasrc="LMEDW");
+
+ 
+
+     create table advanced_care_planning
+
+          as select A.*
+
+          FROM
+
+           (select * from connection to EDW
+
+           (select *
+
+                from landmarkedw.dbo.member_advanced_care_plan_information)) as A
+
+           INNER JOIN analysis as B
+
+           on a.patientid_ref=b.patientid;
+
+ 
+
+disconnect from edw;
+
+ 
+
+quit;
+
+ 
+
+ 
+
+proc sort data=advanced_care_planning;
+
+by patientid_ref Convsersation_Date_Completed created_on modifiedDate;
+
+run;
+
+ 
+
+ 
+
+data last_adv_care_plan;
+
+    set advanced_care_planning;
+
+    by patientid_ref Convsersation_Date_Completed created_on modifiedDate;
+
+ 
+
+     if last.patientid_ref;
+
+run;
+
+ 
+
+ 
+
+proc sql;
+
+    create table conditions as select A.*, b.index_date,
+
+                   ABS(INTCK('month',b.index_date, mdy(input(substr(a.incurred_month,5,2),2.),1,input(substr(a.incurred_month,1,4),4.)))) as abs_diff
+
+       from
+
+        (select    COALESCE(aa.patientid,bb.patientid) as patientid,
+
+                 aa.healthplan_id_ref,aa.incurred_month,aa.ckd,aa.cvd,aa.htn,aa.pvd,aa.chd,aa.cancer,aa.afib,aa.chf,aa.cancerothers,aa.diabetes,aa.pd,aa.dementia,aa.cld,aa.depression
+
+                 from dm_mem.mbrmnth_chroniccondition as AA
+
+                     LEFT JOIN (select healthplan_id_ref, healthplan_memberid, patientid from edw.member_master where healthplan_id_ref=6) as BB
+
+                     on aa.healthplan_id_ref=bb.healthplan_id_ref and aa.healthplan_memberid=bb.healthplan_memberid) as A
+
+        INNER JOIN analysis as B
+
+        on a.patientid=b.patientid and a.healthplan_id_ref=b.healthplan_id_ref;
+
+quit;
+
+ 
+
+ 
+
+ 
+
+proc sort data=conditions;
+
+by healthplan_id_ref patientid abs_diff incurred_month;
+
+run;
+
+ 
+
+data conditions_unique;
+
+    set conditions;
+
+    by healthplan_id_ref patientid abs_diff incurred_month;
+
+     if first.patientid;
+
+ 
+
+     if abs_diff<6; /* ensure that chronic condition data is within 6 months of index date */;
+
+ 
+
+cc_count=sum(ckd,cvd,htn,pvd,chd,cancer,afib,chf,cancerothers,diabetes,pd,dementia,cld,depression);
+
+     if cc_count=. then cc_count=0;
+
+ 
+
+     if cc_count>=8 then cc_8=1; else cc_8=0;
+
+ 
+
+run;
+
+ 
+
+ 
+
+ 
+
+ 
+
+proc sort data=analysis;
+
+by patientid;
+
+run;
+
+ 
+
+proc sort data=last_adv_care_plan out=sorted (rename=(patientid_ref=patientid));
+
+by patientid_ref;
+
+run;
+
+ 
+
+ 
+
+data analysis;
+
+   merge analysis (in=a) sorted (keep=patientid Convsersation_Date_Completed Convsersation_not_addressed Convsersation_patient_refused is_dnr is_dni is_full_code
+
+                                      created_by created_on updated_by updated_on rename=(created_by=adv_care_pln_created_by updated_by=adv_care_pln_updated_by
+
+                                      created_on=adv_care_pln_created_on updated_on=adv_care_pln_updated_on
+
+                                      Convsersation_Date_Completed=adv_care_pln_date Convsersation_not_addressed=adv_care_pln_not_addressed
+
+                                      Convsersation_patient_refused=adv_care_pln_refused));
+
+   by patientid;
+
+   if a=1;
+
+ 
+
+   if ever_engaged_flag=1 then do;
+
+        if is_full_code=1 then dnr_status=3;
+
+           else if is_dnr=1 or is_dni=1 then dnr_status=2;
+
+           else dnr_status=1;
+
+           end;
+
+   if ever_engaged_flag=0 then dnr_status=0;
+
+ 
+
+run;
+
+ 
+
+title "Advanced Care Planning";
+
+ 
+
+proc freq data=analysis;
+
+tables ever_engaged_flag*is_dnr*is_dni*Is_Full_Code*dnr_status / missing list;
+
+run;
+
+ 
+
+proc freq data=analysis;
+
+tables ever_engaged_flag*Is_Full_Code ever_engaged_flag*dnr_status / missing ;
+
+run;
+
+ 
+
+ 
+
+proc sort data=analysis;
+
+by healthplan_id_ref  patientid index_date;
+
+run;
+
+ 
+
+proc sort data=conditions_unique;
+
+by healthplan_id_ref  patientid index_date;
+
+run;
+
+ 
+
+ 
+
+data out.analysis_dcm_201905;
+
+   merge analysis (in=a) conditions_unique (keep=healthplan_id_ref patientid index_date ckd cvd htn pvd chd cancer afib chf cancerothers
+
+                                                 diabetes pd dementia cld depression cc_count cc_8);
+
+   by healthplan_id_ref  patientid index_date;
+
+   if a=1;
+
+ 
+
+/* Recode any missing values to zero for numeric variables */
+
+ARRAY NUMVAR _NUMERIC_;
+
+DO OVER NUMVAR;
+
+ 
+
+   IF NUMVAR=. then NUMVAR=0;
+
+ 
+
+END;
+
+ 
+
+run;
+
+ 
+
+ 
+
+title "CC Count";
+
+ 
+
+ 
+
+ 
+
+proc freq data=out.analysis_dcm_201905;
+
+tables healthplan_id_ref*cc_count / missing;
+
+run;
+
+ 
+
+ 
+
+ods trace on;
+
+ 
+
+title "Distribution of Engaged Months";
+
+ 
+
+ods output quantiles=eng_mm_quant;
+
+ 
+
+proc univariate data=out.analysis_dcm_201905;
+
+where ever_engaged_flag=1;
+
+var engaged_mm;
+
+histogram;
+
+run;
+
+ 
+
+ods output close;
+
+ 
+
+ods trace off;
+
+ 
+
+title "Table 1: Population Differences by Ever Engaged";
+
+ 
+
+ 
+
+proc ttest data=out.analysis_dcm_201905;
+
+class ever_engaged_flag;
+
+var months age esrd initial_rafa death ltc;
+
+run;
+
+ 
+
+ 
+
+ods graphics on;
+
+title "Full Sample Where CCount>0";
+
+title2 "Cox Proportional Hazard of Months to Death";
+
+proc phreg data=out.analysis_dcm_201905 plots(overlay)=(survival);
+
+WHERE CC_COUNT>0;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+      model months*death(0) = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                              chf cancerothers pd dementia esrd LTC frail_fall frail_loss_weight
+
+                                      frail_vision_impairment frail_problem_urine_crtl frail_decubitus_ulcer frail_malnutrition;
+
+       CONTRAST 'C1' ever_engaged_flag 1/ estimate=exp;
+
+       CONTRAST 'C2' initial_rafa 1/ estimate=exp;
+
+       CONTRAST 'C3' index_yr 1 0/ estimate=exp;
+
+       *CONTRAST 'C4' index_yr 0 1/ estimate=exp;
+
+       CONTRAST 'C6' gender 1/ estimate=exp;
+
+      baseline covariates=out.analysis_dcm_201905 out=baseline_all survival=_ALL_/diradj group=ever_engaged_flag;
+
+run;
+
+ 
+
+ods graphics off;
+
+ 
+
+ 
+
+ods graphics on;
+
+title "Full Sample Where CCount>0 and Survived 9+M";
+
+title2 "Reduces Endogeneity between engagement and mortality";
+
+ 
+
+proc phreg data=out.analysis_dcm_201905 plots(overlay)=(survival);
+
+WHERE CC_COUNT>0 and Months>=9;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+      model months*death(0) = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                              chf cancerothers pd dementia esrd LTC frail_vision_impairment frail_problem_urine_crtl frail_decubitus_ulcer
+
+                              frail_malnutrition;
+
+       CONTRAST 'C1' ever_engaged_flag 1/ estimate=exp;
+
+       CONTRAST 'C2' initial_rafa 1/ estimate=exp;
+
+       CONTRAST 'C3' index_yr 1 0/ estimate=exp;
+
+       *CONTRAST 'C4' index_yr 0 1/ estimate=exp;
+
+       CONTRAST 'C6' gender 1/ estimate=exp;
+
+      baseline covariates=out.analysis_dcm_201905 out=baseline_9m survival=_ALL_/diradj group=ever_engaged_flag;
+
+run;
+
+ 
+
+ods graphics off;
+
+ 
+
+ 
+
+ 
+
+ 
+
+ods graphics on;
+
+title "Full Sample Where CCount>0 and Survived 12+M";
+
+title2 "Reduces Endogeneity between engagement and mortality";
+
+ 
+
+proc phreg data=out.analysis_dcm_201905 plots(overlay)=(survival);
+
+WHERE CC_COUNT>0 and Months>=12;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+      model months*death(0) = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                              chf cancerothers pd dementia esrd LTC frail_vision_impairment frail_problem_urine_crtl frail_decubitus_ulcer
+
+                              frail_malnutrition;
+
+       CONTRAST 'C1' ever_engaged_flag 1/ estimate=exp;
+
+       CONTRAST 'C2' initial_rafa 1/ estimate=exp;
+
+       CONTRAST 'C3' index_yr 1 0/ estimate=exp;
+
+       *CONTRAST 'C4' index_yr 0 1/ estimate=exp;
+
+       CONTRAST 'C6' gender 1/ estimate=exp;
+
+      baseline covariates=out.analysis_dcm_201905 out=baseline_12m survival=_ALL_/diradj group=ever_engaged_flag;
+
+run;
+
+ 
+
+ods graphics off;
+
+ 
+
+ 
+
+ 
+
+data baseline;
+
+   set baseline;
+
+ 
+
+   cum_haz=-1*LOG(survival);
+
+   run;
+
+ 
+
+ 
+
+ 
+
+proc format;
+
+value yesno
+
+1= "Yes"
+
+0= "No"
+
+other="Unk";
+
+run;
+
+ 
+
+ 
+
+ods pdf file="\\vm_fs01\Department\Finance\HCE Projects\60_EOL_Predictive_Model\Survival_Time\data\v3\graph1.pdf";
+
+ 
+
+proc sgplot data=baseline_9m;
+
+title "Figure 1. Survival Curve by Landmark Engagement";
+
+title2;   /* Clears Title 2*/
+
+yaxis min=.5;
+
+xaxis label="Months in Sample";
+
+format survival percent7.0 ever_engaged_flag yesno.;
+
+ 
+
+step x=months y=survival / group=ever_engaged_flag
+
+                             legendlabel='Survival Curve';
+
+ 
+
+run;
+
+ 
+
+ods pdf close;
+
+ 
+
+ 
+
+ 
+
+/*
+
+proc sgplot data=baseline;
+
+title "Figure 1. Survival Curve by Landmark Engagement";
+
+yaxis min=.5;
+
+xaxis label="Months in Sample";
+
+format survival percent7.0 ever_engaged_flag yesno.;
+
+ 
+
+band x=months lower=LowerSurvival upper=UpperSurvival / group=ever_engaged_flag legendlabel="95% CLM" Transparency=.5;
+
+series x=months y=survival / group=ever_engaged_flag
+
+                             legendlabel='Survival Curve';
+
+ 
+
+run;
+
+*/
+
+ 
+
+ods graphics on;
+
+title "ESRD Only - All months";
+
+proc phreg data=out.analysis_dcm_201905 plots(overlay)=(survival);
+
+WHERE CC_COUNT>0 and ESRD=1;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+      model months*death(0) = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                              chf cancerothers pd dementia LTC;
+
+       CONTRAST 'C1' ever_engaged_flag 1/ estimate=exp;
+
+       CONTRAST 'C2' initial_rafa 1/ estimate=exp;
+
+       CONTRAST 'C3' index_yr 1 0/ estimate=exp;
+
+       CONTRAST 'C4' index_yr 0 1/ estimate=exp;
+
+       CONTRAST 'C6' gender 1/ estimate=exp;
+
+      baseline covariates=out.analysis_dcm_201905 out=baseline survival=_ALL_/diradj group=ever_engaged_flag;
+
+run;
+
+ 
+
+ods graphics off;
+
+ 
+
+ods graphics on;
+
+title "LTC Only - All Months";
+
+proc phreg data=out.analysis_dcm_201905 plots(overlay)=(survival);
+
+WHERE CC_COUNT>0 and LTC=1;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+      model months*death(0) = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                              chf cancerothers pd dementia esrd;
+
+       CONTRAST 'C1' ever_engaged_flag 1/ estimate=exp;
+
+       CONTRAST 'C2' initial_rafa 1/ estimate=exp;
+
+       CONTRAST 'C3' index_yr 1 0/ estimate=exp;
+
+       CONTRAST 'C4' index_yr 0 1/ estimate=exp;
+
+       CONTRAST 'C6' gender 1/ estimate=exp;
+
+      baseline covariates=out.analysis_dcm_201905 out=baseline survival=_ALL_/diradj group=ever_engaged_flag;
+
+run;
+
+ 
+
+ods graphics off;
+
+ 
+
+ 
+
+**************** SERVICES AT END OF LIFE;
+
+ 
+
+ 
+
+ 
+
+ 
+
+proc freq data=out.analysis_dcm_201905;
+
+where death=1 and hospice=0 and esrd~=1 and ltc~=1;
+
+tables ever_engaged_flag*ip_30_days /  missing;
+
+run;
+
+ 
+
+ 
+
+title "Probability of IP Admit in Last 30 Days of Life";
+
+ 
+
+proc logistic data=out.analysis_dcm_201905 descending;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+where death=1 and hospice=0 and esrd~=1 and ltc~=1;
+
+model ip_30_days = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                   /*ckd cvd pvd */chd /*cancer*/ afib chf cancerothers diabetes pd dementia cld /*depression*/ cc_8
+
+                    frail_decubitus_ulcer
+
+frail_difficulty_walking
+
+/*frail_fall
+
+frail_loss_weight
+
+frail_malnutrition
+
+frail_no_fecal_crtl
+
+frail_problem_urine_crtl*/
+
+frail_social_support
+
+frail_vision_impairment;
+
+run;
+
+ 
+
+ 
+
+title "Probability of IP Admit in Last 14 Days of Life";
+
+ 
+
+ 
+
+proc logistic data=out.analysis_dcm_201905 descending;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+where death=1 and hospice=0 and esrd~=1 and ltc~=1;
+
+model ip_14_days = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                   /*ckd cvd pvd */chd /*cancer*/ afib chf cancerothers diabetes pd dementia cld /*depression*/ cc_8
+
+                    frail_decubitus_ulcer
+
+frail_difficulty_walking
+
+/*frail_fall
+
+frail_loss_weight
+
+frail_malnutrition
+
+frail_no_fecal_crtl
+
+frail_problem_urine_crtl*/
+
+frail_social_support
+
+frail_vision_impairment;
+
+run;
+
+ 
+
+ 
+
+title "Probability of IP Admit in Last 7 Days of Life";
+
+ 
+
+proc logistic data=out.analysis_dcm_201905 descending;
+
+class ever_engaged_flag (ref='0') index_yr (ref='2016') gender(ref='M');
+
+where death=1 and hospice=0 and esrd~=1 and ltc~=1;
+
+model ip_7_days = ever_engaged_flag initial_rafa index_yr gender AGE_LT75 AGE_75_79 AGE_85_89 AGE_90
+
+                   /*ckd cvd pvd */chd /*cancer*/ afib chf cancerothers diabetes pd dementia cld /*depression*/ cc_8
+
+                    frail_decubitus_ulcer
+
+frail_difficulty_walking
+
+/*frail_fall
+
+frail_loss_weight
+
+frail_malnutrition
+
+frail_no_fecal_crtl
+
+frail_problem_urine_crtl*/
+
+frail_social_support
+
+frail_vision_impairment;
+
+run;
+
+ 
+
+ 
+
+ 
+
